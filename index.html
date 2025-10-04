@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Red Bishop</title>
+  <link rel='icon' type='image/svg+xml' href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23000"/><text x="50%" y="56%" text-anchor="middle" font-size="46" fill="%23ef4444">♝</text></svg>' />
+  <!-- Tailwind via CDN for fast styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Extra minimal tweaks */
+    .glass { backdrop-filter: blur(8px); background: rgba(8,8,8,0.72); }
+    .shadow-deep { box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
+    .progress-inner { transition: width .25s ease; }
+  </style>
+</head>
+<body class="min-h-screen bg-black text-neutral-100 flex items-center justify-center p-6">
+  <canvas id="matrix" class="fixed inset-0 w-full h-full pointer-events-none" style="z-index:-1"></canvas>
+  <div class="fixed inset-0 bg-gradient-to-b from-black/70 via-black/60 to-black/80 pointer-events-none" style="z-index:-2"></div>
+  <main class="relative z-10 w-full max-w-3xl">
+    <header class="mb-6 text-center">
+      <h1 class="text-3xl md:text-4xl font-bold tracking-tight text-red-400">Red Bishop</h1>
+      <p class="text-neutral-400 mt-2">Password Strength Tester — Local, client-side entropy & guidance.</p>
+    </header>
+
+    <section class="glass rounded-2xl border border-neutral-800 shadow-deep p-5 md:p-6">
+      <label for="pw" class="block text-sm text-neutral-400 mb-2">Enter password</label>
+      <div class="flex gap-2">
+        <input id="pw" type="password" placeholder="Type here (stays on your device)"
+               class="flex-1 rounded-xl bg-neutral-900 border border-neutral-800 focus:border-red-500 outline-none px-4 py-3 text-base placeholder:text-neutral-500" />
+        <button id="toggle" class="px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 transition">Show</button>
+        <button id="clear" class="px-4 py-3 rounded-xl bg-neutral-900 border border-neutral-800 hover:bg-neutral-800 transition">Clear</button>
+      </div>
+
+      <!-- Strength Bar -->
+      <div class="mt-4">
+        <div class="flex justify-between text-sm mb-1">
+          <span id="label" class="text-neutral-300 font-medium">Strength: Too short</span>
+          <span id="pct" class="text-neutral-400">0%</span>
+        </div>
+        <div class="h-3 w-full bg-neutral-900 rounded-full overflow-hidden border border-neutral-800">
+          <div id="bar" class="h-full progress-inner" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- Metrics -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
+        <div class="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
+          <div class="text-sm text-neutral-400">Entropy (bits)</div>
+          <div id="bits" class="text-2xl font-semibold">0.0</div>
+          <div class="text-xs text-neutral-500 mt-1">Higher is better. 80+ bits is strong.</div>
+        </div>
+        <div class="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
+          <div class="text-sm text-neutral-400">Estimated crack time</div>
+          <div id="time" class="text-2xl font-semibold">0 sec</div>
+          <div class="text-xs text-neutral-500 mt-1">Assumes ~10B guesses/sec (rough).</div>
+        </div>
+        <div class="rounded-xl border border-neutral-800 bg-neutral-900/50 p-4">
+          <div class="text-sm text-neutral-400">Character sets used</div>
+          <ul class="text-sm mt-1 space-y-1">
+            <li id="hasLower" class="text-neutral-500">✗ Lowercase</li>
+            <li id="hasUpper" class="text-neutral-500">✗ Uppercase</li>
+            <li id="hasDigit" class="text-neutral-500">✗ Numbers</li>
+            <li id="hasSymbol" class="text-neutral-500">✗ Symbols</li>
+            <li id="hasSpace" class="text-neutral-500">✗ Spaces</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Suggestions -->
+      <div class="mt-6">
+        <div class="text-sm text-neutral-400 mb-2">Suggestions</div>
+        <div id="tips" class="text-neutral-400">
+          Start typing to see feedback. Try a passphrase like <span class="mx-1 text-neutral-200">oak river neon comet</span> and add a number & symbol.
+        </div>
+      </div>
+
+      <!-- Generators -->
+      <div class="mt-6 border-t border-neutral-800 pt-5">
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="genStrong" class="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-medium transition">Generate strong (16)</button>
+          <button id="genPhrase" class="px-4 py-2 rounded-xl bg-red-700 hover:bg-red-600 text-white font-medium transition">Generate passphrase (4 words)</button>
+          <span class="text-xs text-neutral-500">Generators run locally.</span>
+        </div>
+      </div>
+    </section>
+
+    <p class="text-xs text-neutral-500 mt-4 text-center">
+      Note: This tool provides heuristic estimates only. For critical accounts, use a password manager to create and store unique random passwords.
+    </p>
+  </main>
+
+  <script>
+    // Matrix code waterfall background (red)
+    const matrixCanvas = document.getElementById('matrix');
+    const mtx = matrixCanvas.getContext('2d');
+    let W, H, COLS, DROPS, SPEEDS;
+    const FONT_SIZE = 16;
+    const SPEED = 0.12;
+    const CHARS = 'ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹ0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    function matrixResize(){
+      W = matrixCanvas.width = window.innerWidth;
+      H = matrixCanvas.height = window.innerHeight;
+      COLS = Math.floor(W / FONT_SIZE);
+      DROPS = Array.from({length: COLS}, () => -Math.random() * (H / FONT_SIZE));
+      SPEEDS = Array.from({length: COLS}, () => SPEED * (0.65 + Math.random() * 0.7));
+    }
+    matrixResize();
+    window.addEventListener('resize', matrixResize);
+
+    function matrixDraw(){
+      // darker trail for a moody look
+      mtx.fillStyle = 'rgba(0,0,0,0.06)';
+      mtx.fillRect(0,0,W,H);
+      mtx.font = FONT_SIZE + 'px monospace';
+      for (let i=0;i<DROPS.length;i++){
+        const char = CHARS.charAt(Math.floor(Math.random()*CHARS.length));
+        const x = i * FONT_SIZE;
+        const y = DROPS[i] * FONT_SIZE;
+        // occasional brighter red for sparkle
+        mtx.fillStyle = Math.random() < 0.02 ? 'rgba(255,80,80,0.95)' : 'rgba(255,0,0,0.85)';
+        mtx.fillText(char, x, y);
+        if (y > H && Math.random() > 0.98) { DROPS[i] = -Math.random() * 20; SPEEDS[i] = SPEED * (0.65 + Math.random() * 0.7); } else { DROPS[i] += SPEEDS[i]; }
+      }
+      requestAnimationFrame(matrixDraw);
+    }
+    requestAnimationFrame(matrixDraw);
+
+    // ===== Utilities =====
+    const COMMON = new Set([
+      "password","123456","123456789","qwerty","111111","12345678","abc123","1234567","password1","123123",
+      "iloveyou","admin","welcome","monkey","dragon","letmein","football","login","princess","qwerty123",
+      "baseball","starwars","trustno1","sunshine","master","hello","freedom","whatever","qazwsx","password123"
+    ]);
+
+    const sequential = (s) => /0123|1234|2345|3456|4567|5678|6789|abcd|bcde|cdef|defg|efgh|fghi|ghij|hijk|ijkl|jklm|klmn|lmno|mnop|nopq|opqr|pqrs|qrst|rstu|stuv|tuvw|uvwx|vwxy|wxyz/i.test(s);
+    const repeated = (s) => /(.)\1{2,}/.test(s);
+
+    function charsets(password){
+      const sets = {
+        lower: /[a-z]/.test(password),
+        upper: /[A-Z]/.test(password),
+        digit: /[0-9]/.test(password),
+        symbol: /[^A-Za-z0-9\s]/.test(password),
+        space: /\s/.test(password)
+      };
+      const poolSizes = { lower:26, upper:26, digit:10, symbol:33, space:1 };
+      let pool = 0;
+      for (const k of Object.keys(sets)) if (sets[k]) pool += poolSizes[k];
+      return { sets, pool };
+    }
+
+    function entropyBits(password){
+      if (!password) return 0;
+      const { pool } = charsets(password);
+      const ideal = Math.log2(Math.max(pool,1)) * password.length;
+      let penalty = 0;
+      if (sequential(password)) penalty += 8;
+      if (repeated(password)) penalty += 6;
+      if (/^(?:[A-Za-z]+|\d+)$/.test(password)) penalty += 6;
+      if (COMMON.has(password.toLowerCase())) penalty += 20;
+      return Math.max(0, ideal - penalty);
+    }
+
+    function crackTime(bits){
+      const guesses = Math.pow(2, Math.max(bits - 1, 0));
+      const rate = 1e10; // guesses per second
+      const seconds = guesses / rate;
+      const units = [ [60, "sec"], [60, "min"], [24, "hr"], [365, "day"], [10, "yr"], [10, "decade"], [10, "century"] ];
+      let val = seconds; let label = "sec";
+      for (let i=0; i<units.length && val >= units[i][0]; i++){ val /= units[i][0]; label = units[i][1]; }
+      const plural = val >= 2 ? "s" : "";
+      return `${val < 100 ? val.toFixed(1) : Math.round(val)} ${label}${plural}`;
+    }
+
+    function score(password){
+      const bits = entropyBits(password);
+      const capped = Math.min(bits, 100);
+      let label = "Too short";
+      if (capped < 30) label = "Weak";
+      else if (capped < 50) label = "Fair";
+      else if (capped < 70) label = "Good";
+      else if (capped < 90) label = "Strong";
+      else label = "Excellent";
+      return { bits, pct: Math.round(capped), label };
+    }
+
+    function suggestions(pw){
+      const tips = [];
+      const { sets } = charsets(pw);
+      if (pw.length < 12) tips.push("Use at least 12–16 characters.");
+      if (!sets.upper) tips.push("Add uppercase letters.");
+      if (!sets.lower) tips.push("Add lowercase letters.");
+      if (!sets.digit) tips.push("Include a number.");
+      if (!sets.symbol) tips.push("Include a symbol (e.g., !@#$%).");
+      if (sequential(pw)) tips.push("Avoid sequences like 1234 or abcd.");
+      if (repeated(pw)) tips.push("Avoid repeating characters (e.g., aaa, 111).");
+      if (COMMON.has(pw.toLowerCase())) tips.push("Don’t use common passwords.");
+      if (/\b(?:name|msu|spartan|detroit|password|qwerty|letmein)\b/i.test(pw)) tips.push("Avoid personal words or clichés.");
+      if (tips.length === 0 && pw) tips.push("Looks solid—consider a passphrase of 4+ random words.");
+      return tips;
+    }
+
+    function setBarColor(pct){
+      let color = "bg-red-900";
+      if (pct >= 80) color = "bg-red-400";
+      else if (pct >= 60) color = "bg-red-500";
+      else if (pct >= 40) color = "bg-red-600";
+      else if (pct >= 20) color = "bg-red-700";
+      return color;
+    }
+
+    function render(){
+      const pw = document.getElementById('pw').value;
+      const { bits, pct, label } = score(pw);
+      document.getElementById('label').textContent = `Strength: ${label}`;
+      document.getElementById('pct').textContent = `${pct}%`;
+      document.getElementById('bits').textContent = bits.toFixed(1);
+      document.getElementById('time').textContent = crackTime(bits);
+      const bar = document.getElementById('bar');
+      bar.style.width = pct + '%';
+      bar.className = 'h-full progress-inner ' + setBarColor(pct);
+
+      const { sets } = charsets(pw);
+      document.getElementById('hasLower').className = sets.lower ? 'text-red-400' : 'text-neutral-500';
+      document.getElementById('hasLower').textContent = (sets.lower ? '✓' : '✗') + ' Lowercase';
+      document.getElementById('hasUpper').className = sets.upper ? 'text-red-400' : 'text-neutral-500';
+      document.getElementById('hasUpper').textContent = (sets.upper ? '✓' : '✗') + ' Uppercase';
+      document.getElementById('hasDigit').className = sets.digit ? 'text-red-400' : 'text-neutral-500';
+      document.getElementById('hasDigit').textContent = (sets.digit ? '✓' : '✗') + ' Numbers';
+      document.getElementById('hasSymbol').className = sets.symbol ? 'text-red-400' : 'text-neutral-500';
+      document.getElementById('hasSymbol').textContent = (sets.symbol ? '✓' : '✗') + ' Symbols';
+      document.getElementById('hasSpace').className = sets.space ? 'text-red-400' : 'text-neutral-500';
+      document.getElementById('hasSpace').textContent = (sets.space ? '✓' : '✗') + ' Spaces';
+
+      const tips = suggestions(pw);
+      const tipsEl = document.getElementById('tips');
+      if (!pw){
+        tipsEl.innerHTML = 'Start typing to see feedback. Try a passphrase like <span class="mx-1 text-neutral-200">oak river neon comet</span> and add a number & symbol.';
+      } else {
+        tipsEl.innerHTML = '<ul class="list-disc list-inside space-y-1 text-neutral-200">' + tips.map(t=>`<li>${t}</li>`).join('') + '</ul>';
+      }
+    }
+
+    function genPassword(length=16, useUpper=true, useDigits=true, useSymbols=true){
+      const lowers = 'abcdefghijklmnopqrstuvwxyz';
+      const uppers = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      const digits = '0123456789';
+      const symbols = '!@#$%^&*()-_=+[]{};:,.?/\\\|';
+      let alphabet = lowers;
+      if (useUpper) alphabet += uppers;
+      if (useDigits) alphabet += digits;
+      if (useSymbols) alphabet += symbols;
+      let out = '';
+      for (let i=0; i<length; i++){
+        const idx = Math.floor(Math.random() * alphabet.length);
+        out += alphabet[idx];
+      }
+      return out;
+    }
+
+    const WORDS = [
+      'oak','river','neon','comet','hollow','ember','quartz','lunar','delta','apex','pico','matrix','violet','plume','echo',
+      'raven','atlas','sol','nova','frost','cobalt','jet','onyx','willow','cedar','coal','zen','orbit','pixel'
+    ];
+    function genPassphrase(n=4){
+      const words = [];
+      for (let i=0;i<n;i++) words.push(WORDS[Math.floor(Math.random()*WORDS.length)]);
+      const seps = ['-','_','.', ' '];
+      const sep = seps[Math.floor(Math.random()*seps.length)];
+      const num = Math.floor(Math.random()*90 + 10); // 10..99
+      const sym = ['!','?','*','#','$'][Math.floor(Math.random()*5)];
+      return words.join(sep) + num + sym;
+    }
+
+    // ===== Wire up =====
+    const pwEl = document.getElementById('pw');
+    pwEl.addEventListener('input', render);
+    document.getElementById('toggle').addEventListener('click', (e)=>{
+      e.preventDefault();
+      pwEl.type = pwEl.type === 'password' ? 'text' : 'password';
+      e.target.textContent = pwEl.type === 'password' ? 'Show' : 'Hide';
+    });
+    document.getElementById('clear').addEventListener('click', (e)=>{
+      e.preventDefault();
+      pwEl.value = '';
+      render();
+      pwEl.focus();
+    });
+    document.getElementById('genStrong').addEventListener('click', (e)=>{
+      e.preventDefault();
+      pwEl.value = genPassword(16, true, true, true);
+      render();
+    });
+    document.getElementById('genPhrase').addEventListener('click', (e)=>{
+      e.preventDefault();
+      pwEl.value = genPassphrase(4);
+      render();
+    });
+
+    render();
+  </script>
+</body>
+</html>
